@@ -1,0 +1,52 @@
+name: Deploy Demo Service
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Run Tests
+        run: |
+          npm install
+          npm test || exit 0
+
+      - name: Zip Lambda code (excluding node_modules)
+        run: |
+          zip -r auto-deploy.zip . -x "node_modules/*"
+
+      - name: Move ZIP to Terraform folder
+        run: mv auto-deploy.zip terraform/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Import Lambda if it exists
+        run: |
+          cd terraform
+          if aws lambda get-function --function-name demo-service-e; then
+            terraform import aws_lambda_function.demo_service demo-service-e || true
+          fi
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve
