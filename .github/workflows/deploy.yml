@@ -9,28 +9,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -----------------------------
+      # Checkout
+      # -----------------------------
       - name: Checkout Code
         uses: actions/checkout@v3
 
+      # -----------------------------
+      # Run Unit Tests
+      # -----------------------------
       - name: Run Tests
         run: |
           npm install
-          npm test || exit 0
+          npm test
+        continue-on-error: false
 
-      - name: Zip Lambda code (excluding node_modules)
-        run: |
-          zip -r auto-deploy.zip . -x "node_modules/*"
+      # -----------------------------
+      # Package Lambda
+      # -----------------------------
+      - name: Zip Lambda code
+        run: zip -r auto-deploy.zip .
 
       - name: Move ZIP to Terraform folder
         run: mv auto-deploy.zip terraform/
 
+      # -----------------------------
+      # Configure AWS Credentials
+      # -----------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
+      # -----------------------------
+      # Setup Terraform
+      # -----------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
 
@@ -39,14 +54,56 @@ jobs:
           cd terraform
           terraform init
 
+      # -----------------------------
+      # Import Lambda if it exists
+      # -----------------------------
       - name: Import Lambda if it exists
         run: |
           cd terraform
-          if aws lambda get-function --function-name demo-service-e; then
+          if aws lambda get-function --function-name demo-service-e 2>/dev/null; then
             terraform import aws_lambda_function.demo_service demo-service-e || true
           fi
 
+      # -----------------------------
+      # Terraform Apply
+      # -----------------------------
       - name: Terraform Apply
+        id: apply
         run: |
           cd terraform
           terraform apply -auto-approve
+
+      # -----------------------------
+      # Rollback Infra (if Terraform Apply fails)
+      # -----------------------------
+      - name: Rollback Terraform (Destroy Infra)
+        if: failure() && steps.apply.outcome == 'failure'
+        run: |
+          cd terraform
+          terraform destroy -auto-approve
+
+      # -----------------------------
+      # Rollback Lambda Deployment
+      # -----------------------------
+      - name: Rollback Lambda to Last Version
+        if: failure()
+        run: |
+          echo "Rolling back Lambda to last known good version..."
+          if aws lambda get-alias --function-name demo-service-e --name live 2>/dev/null; then
+            LAST_VERSION=$(aws lambda get-alias --function-name demo-service-e --name live --query 'FunctionVersion' --output text)
+            echo "Previous stable version is $LAST_VERSION"
+            aws lambda update-alias --function-name demo-service-e --name live --function-version $LAST_VERSION || true
+          else
+            echo "⚠️ No previous version exists (first deployment). Skipping rollback."
+          fi
+
+      # -----------------------------
+      # Notifications
+      # -----------------------------
+      - name: Notify on Success
+        if: success()
+        run: echo "✅ Deployment Successful! You can hook SNS/Slack here."
+
+      - name: Notify on Failure
+        if: failure()
+        run: echo "❌ Deployment Failed! You can hook SNS/Slack here."
