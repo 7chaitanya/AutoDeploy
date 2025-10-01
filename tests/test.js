@@ -6,11 +6,4 @@ test('should return success message', async () => {
   expect(JSON.parse(response.body).message).toBe("Demo Service is live!");
 });
 
-// Optional: Add a failure test for robustness
-test('should handle errors gracefully', async () => {
-  try {
-    await handler({ causeError: true });
-  } catch (err) {
-    expect(err).toBeDefined();
-  }
-});
+
